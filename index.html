@@ -7,6 +7,9 @@
 <meta name="theme-color" content="#0E5C57">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="FlareLog">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#F6F8F8;--surface:#FFFFFF;--text:#151E1D;--text-secondary:#5C6C6A;--text-tertiary:#8A9896;--accent:#1F8E86;--accent-dark:#0E5C57;--border:#E3E9E8;--good:#3FA66B;--mid:#E0A030;--bad:#D6594A;--danger:#D6594A;color-scheme:light}
@@ -567,6 +570,7 @@ async function startSession(user) {
   try {
     applyRemote(await fetchAll());
     S.ready = true;
+    refreshRemind();
   } catch (e) {
     S.uid = null; S.user = null;
     showGate('Daten nicht erreichbar', 'Deine Einträge konnten nicht geladen werden. Bitte lade die Seite neu.');
@@ -583,6 +587,7 @@ document.addEventListener('visibilitychange', async function () {
 });
 
 function init() {
+  registerSW();
   if (!window.supabase || !window.supabase.createClient) { showGate('Keine Verbindung', 'FlareLog konnte nicht vollständig geladen werden. Bitte prüfe dein Internet und lade die Seite neu.'); return; }
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
   sb.auth.onAuthStateChange(function (event, session) {
@@ -1116,11 +1121,81 @@ function renderInsights() {
 }
 
 // ---------- Einstellungen ----------
+// ---------- Tägliche Erinnerung (Push) ----------
+var VAPID_PUBLIC = 'BIccPkQsy-2nOsIVPSbOJbA50KcCQw0HXeL8KP2nvZEnJdJnnLn_EQqMDV8oiKs5HKRAip-AzMpLyGTRA8PqM_E';
+var remind = { checked: false, on: false, time: '21:00', busy: false, msg: '' };
+function isStandalone() { return window.navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches); }
+function isIOS() { return /iPhone|iPad|iPod/.test(navigator.userAgent); }
+function pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+function b64ToBytes(b) {
+  var pad = '='.repeat((4 - b.length % 4) % 4), raw = atob((b + pad).replace(/-/g, '+').replace(/_/g, '/')), out = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+function registerSW() { if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {}); }
+function repaintSettings() { if ((location.hash || '') === '#einstellungen') renderSettings(); }
+async function refreshRemind() {
+  if (!pushSupported() || !S.uid) { remind.checked = true; return; }
+  try {
+    var reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    remind.on = false;
+    if (sub && Notification.permission === 'granted') {
+      var r = await sb.from('push_subscriptions').select('remind_time').eq('endpoint', sub.endpoint).maybeSingle();
+      if (r.data) { remind.on = true; remind.time = r.data.remind_time; }
+    }
+  } catch (e) { /* ignorieren */ }
+  remind.checked = true; repaintSettings();
+}
+function remindHtml() {
+  var head = '<div><div class="sec-label">Erinnerung</div>';
+  if (!pushSupported() || (isIOS() && !isStandalone())) {
+    return head + '<div class="list"><div class="item static"><span>Tägliche Erinnerung</span><span class="soon">Nicht verfügbar</span></div></div>' +
+      '<div class="foot">' + (isIOS() ? 'Auf dem iPhone geht das nur, wenn FlareLog auf dem Home-Bildschirm liegt: In Safari auf Teilen tippen, dann „Zum Home-Bildschirm". Danach die App von dort öffnen.' : 'Dieser Browser unterstützt keine Mitteilungen.') + '</div></div>';
+  }
+  var h = head + '<div class="list"><button class="item" data-act="remind-toggle"' + (remind.busy ? ' disabled' : '') + '><span>Tägliche Erinnerung</span><span class="chev-r">' + (remind.on ? 'An' : 'Aus') + '</span></button>';
+  if (remind.on) h += '<div class="item static"><span>Uhrzeit</span><input type="time" id="remind-time" value="' + esc(remind.time) + '" style="font:inherit;border:0;background:transparent;color:inherit"></div>';
+  h += '</div><div class="foot">' + (remind.msg ? esc(remind.msg) : 'Du bekommst eine Mitteilung, wenn du für den Tag noch nichts eingetragen hast.') + '</div></div>';
+  return h;
+}
+async function toggleRemind() {
+  if (remind.busy) return;
+  remind.busy = true; remind.msg = ''; repaintSettings();
+  try {
+    var reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    if (remind.on) {
+      if (sub) { var ep = sub.endpoint; await sub.unsubscribe(); await sb.from('push_subscriptions').delete().eq('endpoint', ep); }
+      remind.on = false;
+    } else {
+      var perm = await Notification.requestPermission();
+      if (perm !== 'granted') throw new Error('perm');
+      sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(VAPID_PUBLIC) });
+      var j = sub.toJSON();
+      var tz = 'Europe/Berlin'; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || tz; } catch (e) { /* Standard */ }
+      var up = await sb.from('push_subscriptions').upsert({ endpoint: j.endpoint, user_id: S.uid, p256dh: j.keys.p256dh, auth: j.keys.auth, remind_time: remind.time, tz: tz }, { onConflict: 'endpoint' });
+      if (up.error) throw up.error;
+      remind.on = true;
+    }
+  } catch (e) {
+    remind.msg = (e && e.message === 'perm') ? 'Mitteilungen sind nicht erlaubt. Bitte erlaube sie in den iPhone-Einstellungen unter „Mitteilungen" → FlareLog.' : 'Das hat nicht geklappt. Bitte versuch es noch einmal.';
+  }
+  remind.busy = false; repaintSettings();
+}
+document.addEventListener('change', async function (ev) {
+  if (!ev.target || ev.target.id !== 'remind-time' || !/^\d\d:\d\d$/.test(ev.target.value)) return;
+  remind.time = ev.target.value;
+  try {
+    var reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    if (sub) { var r = await sb.from('push_subscriptions').update({ remind_time: remind.time, last_sent: null }).eq('endpoint', sub.endpoint); if (r.error) throw r.error; remind.msg = 'Gespeichert ✓'; }
+  } catch (e) { remind.msg = 'Die Uhrzeit konnte nicht gespeichert werden.'; }
+  repaintSettings();
+});
+
 function renderSettings() {
   var st = S.settings, activeCount = Object.keys(st.factorsActive).filter(function (k) { return st.factorsActive[k]; }).length + st.customQuestions.filter(function (q) { return q.on; }).length;
   $('#settings-content').innerHTML =
     '<div><div class="sec-label">Deine Erkrankungen</div><div class="list"><button class="item" data-act="open-conds"><span>' + esc(activeConds().map(function (k) { return COND_LABELS[k]; }).join(', ')) + '</span><span class="chev-r">Ändern ›</span></button></div></div>' +
     '<div><div class="sec-label">Tägliche Fragen</div><div class="list"><button class="item" data-act="open-manage"><span>Fragen verwalten</span><span class="chev-r">' + activeCount + ' aktiv ›</span></button></div></div>' +
+    remindHtml() +
     '<div><div class="sec-label">Verbunden</div><div class="list"><div class="item static"><span>Apple Health</span><span class="soon">Folgt</span></div><div class="item static"><span>Wetterdaten</span><span class="soon">Folgt</span></div></div>' +
     '<div class="foot">Schlaf und Periode aus Apple Health sowie das Wetter sollen später automatisch übernommen werden.</div></div>' +
     '<div><div class="sec-label">Abo</div><div class="list"><button class="item" data-go="plus"><span>FlareLog Plus</span><span class="soon">Folgt</span></button></div></div>' +
@@ -1496,6 +1571,7 @@ document.addEventListener('click', function (ev) {
     case 'chat-send': var ci = $('#chat-input'); var cv = ci.value; ci.value = ''; sendChat(cv); break;
     case 'chat-suggest': sendChat(SUGGESTIONS[+key]); break;
     case 'open-wipe': openWipeSheet(); break;
+    case 'remind-toggle': toggleRemind(); break;
     case 'logout': flushAll(); sb.auth.signOut(); break;
     case 'auth-mode': S.auth.mode = key; renderAuth(); break;
     case 'auth-submit': authSubmit(); break;
