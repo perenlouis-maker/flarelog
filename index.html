@@ -109,7 +109,7 @@ textarea.sheet-input{height:150px;font-size:12px;font-family:ui-monospace,Menlo,
 .ci-row:last-child{border-bottom:none}
 .ci-top{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:15px;font-weight:500}
 .val-label{color:var(--text-secondary);font-weight:700;flex:0 0 auto}
-.slider-wrap{position:relative;height:30px;display:flex;align-items:center;touch-action:pan-y;cursor:pointer;flex:1}
+.slider-wrap{position:relative;height:30px;display:flex;align-items:center;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;cursor:pointer;flex:1;min-height:44px}
 .slider-wrap .slider-track{position:absolute;left:0;right:0;height:5px;border-radius:3px;background:var(--border);pointer-events:none}
 .slider-wrap .fill{height:100%;border-radius:3px;background:var(--accent)}
 .slider-wrap .thumb{position:absolute;top:50%;width:20px;height:20px;border-radius:50%;background:#fff;border:1px solid var(--border);box-shadow:0 1px 3px rgba(0,0,0,.2);transform:translate(-50%,-50%);pointer-events:none}
