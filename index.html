@@ -453,7 +453,7 @@ function mergeSettings(raw) {
   return d;
 }
 function emptyEntry(k) {
-  return { date: k, submitted: false, sev: {}, sleep: null, stress: null, nut: {}, flags: {}, custom: {}, meds: false, medications: [], creamUsed: false, creams: [], details: {} };
+  return { date: k, submitted: false, sev: {}, sleep: null, stress: null, nut: {}, flags: {}, custom: {}, meds: null, medications: [], creamUsed: null, creams: [], details: {} };
 }
 function normEntry(raw, k) {
   var d = emptyEntry(k);
@@ -780,12 +780,20 @@ function sevOf(e) {
   if (!e || !e.submitted) return null;
   var ks = Object.keys(e.sev || {});
   if (!ks.length) return null;
-  var m = 0;
-  ks.forEach(function (c) { var s = e.sev[c]; var v = s && s.has ? (s.value == null ? 5 : s.value) : 0; if (v > m) m = v; });
-  return m;
+  var m = 0, any = false;
+  ks.forEach(function (c) {
+    var s = e.sev[c];
+    if (!s || (s.has !== true && s.has !== false)) return;   // nicht beantwortet: zählt nicht
+    any = true;
+    var v = s.has ? (s.value == null ? 5 : s.value) : 0; if (v > m) m = v;
+  });
+  return any ? m : null;
 }
+// Antippen der schon gewählten Antwort nimmt sie zurück (= nicht beantwortet)
+function toggleVal(cur, val) { return cur === val ? null : val; }
 function yesNo(attrs, on) {
-  return '<div class="seg"><button class="' + (!on ? 'on' : '') + '" ' + attrs + ' data-val="0">Nein</button><button class="' + (on ? 'on' : '') + '" ' + attrs + ' data-val="1">Ja</button></div>';
+  var yes = on === true, no = on === false;
+  return '<div class="seg"><button class="' + (no ? 'on' : '') + '" ' + attrs + ' data-val="0">Nein</button><button class="' + (yes ? 'on' : '') + '" ' + attrs + ' data-val="1">Ja</button></div>';
 }
 function scaleRow(id, label, icon, bare) {
   var slider = '<div class="slider-wrap" data-scale="' + id + '"><div class="slider-track"><div class="fill"></div><div class="thumb"></div></div></div>';
@@ -817,11 +825,11 @@ function renderToday() {
 
   var conds = activeConds();
   var html = conds.map(function (key) {
-    if (!e.sev[key]) e.sev[key] = { has: false, value: 5 };
+    if (!e.sev[key]) e.sev[key] = { has: null, value: 5 };
     var s = e.sev[key];
     return '<div class="card"><div class="spread" style="margin-bottom:8px;gap:10px"><span style="font-weight:700;font-size:15px">' + esc(COND_QUESTIONS[key] || 'Beschwerden heute?') + '</span>' +
-      yesNo('data-act="sev" data-key="' + key + '"', s.has) + '</div>' +
-      (s.has ? scaleRow('sev-' + key, '', null, true) : '') + '</div>';
+      yesNo('data-act="sev" data-key="' + key + '"', s.has === true ? true : s.has === false ? false : null) + '</div>' +
+      (s.has === true ? scaleRow('sev-' + key, '', null, true) : '') + '</div>';
   }).join('');
 
   var rows = '';
@@ -838,11 +846,11 @@ function renderToday() {
   if (fa.medication) rows += '<div class="ci-row"><div class="ci-top"><span><span class="ico ico-meds"></span>Medikamente genommen?</span>' + yesNo('data-act="meds"', e.meds) + '</div>' + (e.meds ? tagSummary(e.medications, 'meds-sheet') : '') + '</div>';
   FLAG_DEFS.forEach(function (f) {
     if (!fa[f.key]) return;
-    rows += '<div class="ci-row"><div class="ci-top"><span>' + (f.icon ? '<span class="ico ico-' + f.icon + '"></span>' : '') + esc(f.label) + '</span>' + yesNo('data-act="flag" data-key="' + f.key + '"', !!e.flags[f.key]) + '</div>' + flagDetailHtml(e, f.key) + '</div>';
+    rows += '<div class="ci-row"><div class="ci-top"><span>' + (f.icon ? '<span class="ico ico-' + f.icon + '"></span>' : '') + esc(f.label) + '</span>' + yesNo('data-act="flag" data-key="' + f.key + '"', e.flags[f.key]) + '</div>' + flagDetailHtml(e, f.key) + '</div>';
   });
   S.settings.customQuestions.forEach(function (q) {
     if (!q.on) return;
-    rows += '<div class="ci-row"><div class="ci-top"><span>' + esc(q.label) + '</span>' + yesNo('data-act="custom" data-key="' + esc(q.id) + '"', !!e.custom[q.id]) + '</div></div>';
+    rows += '<div class="ci-row"><div class="ci-top"><span>' + esc(q.label) + '</span>' + yesNo('data-act="custom" data-key="' + esc(q.id) + '"', e.custom[q.id]) + '</div></div>';
   });
   if (rows) html += '<div class="card">' + rows + '</div>';
   html += '<button class="btn-primary" data-act="submit">Fertig</button>';
@@ -952,7 +960,7 @@ function detailRows(e) {
   var rows = [];
   Object.keys(e.sev).forEach(function (c) {
     var s = e.sev[c];
-    rows.push([COND_LABELS[c] || c, s.has ? '<span style="color:var(--' + sevClass(s.value) + ')">' + s.value + '/10</span>' : 'Keine Beschwerden']);
+    rows.push([COND_LABELS[c] || c, s.has === true ? '<span style="color:var(--' + sevClass(s.value) + ')">' + s.value + '/10</span>' : s.has === false ? 'Keine Beschwerden' : 'Nicht beantwortet']);
   });
   if (e.sleep != null) rows.push(['Schlaf', e.sleep + '/10']);
   if (e.stress != null) rows.push(['Stress', e.stress + '/10']);
@@ -993,15 +1001,17 @@ var AXES = {
   stress: { label: 'Stress', icon: 'stress', bands: scaleBands('stress', ['Niedrig', 'Mittel', 'Hoch']) },
   sleep: { label: 'Schlaf', icon: 'sleep', bands: scaleBands('sleep', ['Schlecht', 'Mittel', 'Gut']) },
   food: { label: 'Ernährung', icon: 'food', bands: [{ label: 'Gesund', test: function (e) { return !unhealthy(e); } }, { label: 'Ungesund', test: unhealthy }] },
-  sport: { label: 'Sport', icon: 'lifestyle', bands: [{ label: 'Kein Sport', test: function (e) { return !e.flags.sport; } }, { label: 'Sport', test: function (e) { return !!e.flags.sport; } }] }
+  sport: { label: 'Sport', icon: 'lifestyle', bands: [{ label: 'Kein Sport', test: function (e) { return e.flags.sport === false; } }, { label: 'Sport', test: function (e) { return !!e.flags.sport; } }] }
 };
+function csvTri(v) { return v === true ? 1 : v === false ? 0 : ''; }
+function triOf(v) { return v === true ? true : v === false ? false : null; }
 function binaryFactors() {
   var list = [];
   NUTRITION_DEFS.forEach(function (d) { list.push({ key: 'n_' + d.key, label: d.label, icon: d.icon, grp: 'food', get: function (e) { return !!e.nut[d.key]; } }); });
-  FLAG_DEFS.forEach(function (f) { list.push({ key: f.key, label: f.short, icon: f.icon, grp: 'life', get: function (e) { return !!e.flags[f.key]; } }); });
-  list.push({ key: 'cream', label: 'Creme benutzt', icon: 'cream', grp: 'life', get: function (e) { return !!e.creamUsed; } });
-  list.push({ key: 'meds', label: 'Medikamente', icon: 'meds', grp: 'life', get: function (e) { return !!e.meds; } });
-  S.settings.customQuestions.forEach(function (q) { list.push({ key: 'c_' + q.id, label: q.label, icon: null, grp: 'life', get: function (e) { return !!e.custom[q.id]; } }); });
+  FLAG_DEFS.forEach(function (f) { list.push({ key: f.key, label: f.short, icon: f.icon, grp: 'life', get: function (e) { return triOf(e.flags[f.key]); } }); });
+  list.push({ key: 'cream', label: 'Creme benutzt', icon: 'cream', grp: 'life', get: function (e) { return triOf(e.creamUsed); } });
+  list.push({ key: 'meds', label: 'Medikamente', icon: 'meds', grp: 'life', get: function (e) { return triOf(e.meds); } });
+  S.settings.customQuestions.forEach(function (q) { list.push({ key: 'c_' + q.id, label: q.label, icon: null, grp: 'life', get: function (e) { return triOf(e.custom[q.id]); } }); });
   return list;
 }
 function binStats(f, lag) {
@@ -1009,7 +1019,9 @@ function binStats(f, lag) {
   subKeys().forEach(function (k) {
     var y = sevAt(addDays(k, lag));
     if (y == null) return;
-    (f.get(S.entries[k]) ? w : o).push(y);
+    var g = f.get(S.entries[k]);
+    if (g === null) return;   // Frage nicht beantwortet: nicht werten
+    (g ? w : o).push(y);
   });
   if (w.length < 3 || o.length < 3) return null;
   var a = avg(w), b = avg(o);
@@ -1205,8 +1217,9 @@ function openSportSheet() {
 }
 
 // ---------- Neuigkeiten & Updates ----------
-var APP_VERSION = '1.3';
+var APP_VERSION = '1.4';
 var CHANGELOG = [
+  { v: '1.4', date: '27.11.2026', items: ['Fragen sind am Anfang weder mit Ja noch mit Nein beantwortet. Nicht beantwortete Fragen zählen in der Auswertung nicht mit', 'Antippen der gewählten Antwort nimmt sie wieder zurück'] },
   { v: '1.3', date: '27.11.2026', items: ['Sport: Art und Dauer eintragen, häufige Sportarten werden gemerkt', 'Sonne: Dauer in Stunden (optional)', 'Alkohol: Menge in Getränken (optional)', 'Neu: „Was ist neu" in den Einstellungen und automatischer Update-Hinweis'] },
   { v: '1.2', date: '24.11.2026', items: ['Tägliche Erinnerung per Mitteilung (einstellbare Uhrzeit)', 'Regler lassen sich auf dem Handy zuverlässig verschieben'] },
   { v: '1.1', date: '22.11.2026', items: ['Eigener Login mit E-Mail und Passwort', 'PDF-Export für den Arztbesuch', 'Chat zu deinen Daten'] }
@@ -1372,12 +1385,12 @@ function csvText(keysArg) {
   ks.forEach(function (k) {
     var e = S.entries[k];
     var row = [k].concat(
-      conds.map(function (c) { var s = e.sev[c]; return s ? (s.has ? s.value : 0) : ''; }),
+      conds.map(function (c) { var s = e.sev[c]; return s && s.has === true ? s.value : s && s.has === false ? 0 : ''; }),
       [e.sleep, e.stress],
       NUTRITION_DEFS.map(function (d) { return e.nut[d.key] ? 1 : 0; }),
-      FLAG_DEFS.map(function (f) { return e.flags[f.key] ? 1 : 0; }),
-      S.settings.customQuestions.map(function (x) { return e.custom[x.id] ? 1 : 0; }),
-      [e.creamUsed ? (e.creams.join('; ') || 'ja') : '', e.meds ? (e.medications.join('; ') || 'ja') : '', e.flags.sport ? sportText(e) : '', e.flags.sun && e.details.sun ? e.details.sun.hours : '', e.flags.alcohol && e.details.alcohol ? e.details.alcohol.amount : '']
+      FLAG_DEFS.map(function (f) { return csvTri(e.flags[f.key]); }),
+      S.settings.customQuestions.map(function (x) { return csvTri(e.custom[x.id]); }),
+      [e.creamUsed === true ? (e.creams.join('; ') || 'ja') : e.creamUsed === false ? 'nein' : '', e.meds === true ? (e.medications.join('; ') || 'ja') : e.meds === false ? 'nein' : '', e.flags.sport ? sportText(e) : '', e.flags.sun && e.details.sun ? e.details.sun.hours : '', e.flags.alcohol && e.details.alcohol ? e.details.alcohol.amount : '']
     );
     lines.push(row.map(q).join(','));
   });
@@ -1519,7 +1532,7 @@ function buildPdf(jsPDF, keys) {
     var cm = [];
     if (e.creamUsed) cm.push('Creme: ' + (e.creams.join(', ') || 'ja'));
     if (e.meds) cm.push('Med.: ' + (e.medications.join(', ') || 'ja'));
-    var sev = Object.keys(e.sev).map(function (c) { var s2 = e.sev[c]; return COND_LABELS[c] + ' ' + (s2.has ? s2.value : 0); }).join(', ');
+    var sev = Object.keys(e.sev).filter(function (c) { return e.sev[c].has === true || e.sev[c].has === false; }).map(function (c) { var s2 = e.sev[c]; return COND_LABELS[c] + ' ' + (s2.has ? s2.value : 0); }).join(', ');
     var cells = [deDate(k), sev, e.sleep == null ? '-' : e.sleep, e.stress == null ? '-' : e.stress, eat.join(', ') || '-', cm.join('; ') || '-'];
     var lines = cells.map(function (t, i) { return doc.splitTextToSize(L(t), cols[i].w - 2); });
     var rows = Math.max.apply(null, lines.map(function (l) { return l.length; }));
@@ -1656,14 +1669,14 @@ document.addEventListener('click', function (ev) {
     case 'tab-heute': S.viewDate = todayKey(); S.editing = false; if (location.hash === '#heute') route(); else location.hash = 'heute'; break;
     case 'back-today': S.viewDate = todayKey(); S.editing = false; renderToday(); break;
     // Heute
-    case 'sev': e = entry(k); e.sev[key] = e.sev[key] || { has: false, value: 5 }; e.sev[key].has = val; if (val && e.sev[key].value == null) e.sev[key].value = 5; saveEntry(k); renderToday(); break;
-    case 'cream': e = entry(k); e.creamUsed = val; saveEntry(k); renderToday(); break;
-    case 'meds': e = entry(k); e.meds = val; saveEntry(k); renderToday(); break;
-    case 'flag': e = entry(k); e.flags[key] = val; if (!val) delete e.details[key]; saveEntry(k); renderToday(); break;
+    case 'sev': e = entry(k); e.sev[key] = e.sev[key] || { has: null, value: 5 }; e.sev[key].has = toggleVal(e.sev[key].has, val); if (e.sev[key].has && e.sev[key].value == null) e.sev[key].value = 5; saveEntry(k); renderToday(); break;
+    case 'cream': e = entry(k); e.creamUsed = toggleVal(e.creamUsed, val); saveEntry(k); renderToday(); break;
+    case 'meds': e = entry(k); e.meds = toggleVal(e.meds, val); saveEntry(k); renderToday(); break;
+    case 'flag': e = entry(k); e.flags[key] = toggleVal(e.flags[key], val); if (e.flags[key] !== true) delete e.details[key]; saveEntry(k); renderToday(); break;
     case 'det-step': stepDetail(key, +a.dataset.dir); break;
     case 'sport-sheet': openSportSheet(); break;
     case 'open-changelog': openChangelogSheet(); break;
-    case 'custom': e = entry(k); e.custom[key] = val; saveEntry(k); renderToday(); break;
+    case 'custom': e = entry(k); e.custom[key] = toggleVal(e.custom[key], val); saveEntry(k); renderToday(); break;
     case 'nutri-off': e = entry(k); e.nut[key] = false; saveEntry(k); renderToday(); break;
     case 'food': openFoodSheet(); break;
     case 'meds-sheet': openTagSheet('meds'); break;
