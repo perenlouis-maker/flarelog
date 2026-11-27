@@ -216,6 +216,15 @@ textarea.sheet-input{height:150px;font-size:12px;font-family:ui-monospace,Menlo,
 .auth-msg{font-size:13px;line-height:1.45;padding:10px 12px;border-radius:12px;background:rgba(31,142,134,.12);color:var(--accent-dark)}
 .auth-msg.err{background:rgba(214,89,74,.12);color:var(--danger)}
 .auth-wrap .edit-link{text-align:center}
+.det-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px}
+.det-label{font-size:13px;color:var(--text-secondary);flex:1}
+.det-hint{font-size:11px;color:var(--text-tertiary);margin-top:2px}
+.stepper{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.stepper button{width:34px;height:34px;border-radius:50%;border:none;background:rgba(31,142,134,.1);color:var(--accent-dark);font-size:18px;font-weight:700;font-family:inherit;cursor:pointer}
+.stepper-val{min-width:78px;text-align:center;font-size:14px;font-weight:600}
+.cl-block{margin-bottom:14px}.cl-head{font-weight:700;font-size:14px}.cl-date{font-weight:400;color:var(--text-tertiary);font-size:12px;margin-left:6px}
+.cl-list{margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.5;color:var(--text-secondary)}
+.update-bar{position:fixed;left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom,0px));z-index:80;background:var(--accent-dark);color:#fff;border:none;border-radius:14px;padding:13px 14px;font-size:14px;font-weight:600;font-family:inherit;box-shadow:0 4px 16px rgba(0,0,0,.25);cursor:pointer}
 </style>
 </head>
 <body>
@@ -430,7 +439,7 @@ function defaultSettings() {
     conditions: { neurodermitis: true },
     factorsActive: { sleep: true, stress: true, dairy: true, cream: true, medication: true, sun: true, sport: true, sugar: false, fat: false, meat: false, alcohol: false, smoking: false, therapy: false, period: false },
     customQuestions: [],
-    knownMeds: [], knownCreams: []
+    knownMeds: [], knownCreams: [], knownSports: []
   };
 }
 function mergeSettings(raw) {
@@ -444,12 +453,13 @@ function mergeSettings(raw) {
   return d;
 }
 function emptyEntry(k) {
-  return { date: k, submitted: false, sev: {}, sleep: null, stress: null, nut: {}, flags: {}, custom: {}, meds: false, medications: [], creamUsed: false, creams: [] };
+  return { date: k, submitted: false, sev: {}, sleep: null, stress: null, nut: {}, flags: {}, custom: {}, meds: false, medications: [], creamUsed: false, creams: [], details: {} };
 }
 function normEntry(raw, k) {
   var d = emptyEntry(k);
   Object.keys(raw || {}).forEach(function (x) { d[x] = raw[x]; });
-  ['sev', 'nut', 'flags', 'custom'].forEach(function (x) { if (!d[x] || typeof d[x] !== 'object') d[x] = {}; });
+  ['sev', 'nut', 'flags', 'custom', 'details'].forEach(function (x) { if (!d[x] || typeof d[x] !== 'object' || Array.isArray(d[x])) d[x] = {}; });
+  if (!Array.isArray(d.details.sport)) delete d.details.sport;
   ['medications', 'creams'].forEach(function (x) { if (!Array.isArray(d[x])) d[x] = []; });
   return d;
 }
@@ -570,7 +580,7 @@ async function startSession(user) {
   try {
     applyRemote(await fetchAll());
     S.ready = true;
-    refreshRemind();
+    refreshRemind(); checkUpdate();
   } catch (e) {
     S.uid = null; S.user = null;
     showGate('Daten nicht erreichbar', 'Deine Einträge konnten nicht geladen werden. Bitte lade die Seite neu.');
@@ -581,6 +591,7 @@ async function startSession(user) {
 var lastRefresh = 0;
 document.addEventListener('visibilitychange', async function () {
   if (document.visibilityState === 'hidden') { flushAll(); return; }
+  checkUpdate();
   if (!S.ready || anyBusy() || Date.now() - lastRefresh < 30000) return;
   lastRefresh = Date.now();
   try { if (applyRemote(await fetchAll()) && !dragging) route(); } catch (e) { /* beim nächsten Mal wieder */ }
@@ -827,7 +838,7 @@ function renderToday() {
   if (fa.medication) rows += '<div class="ci-row"><div class="ci-top"><span><span class="ico ico-meds"></span>Medikamente genommen?</span>' + yesNo('data-act="meds"', e.meds) + '</div>' + (e.meds ? tagSummary(e.medications, 'meds-sheet') : '') + '</div>';
   FLAG_DEFS.forEach(function (f) {
     if (!fa[f.key]) return;
-    rows += '<div class="ci-row"><div class="ci-top"><span>' + (f.icon ? '<span class="ico ico-' + f.icon + '"></span>' : '') + esc(f.label) + '</span>' + yesNo('data-act="flag" data-key="' + f.key + '"', !!e.flags[f.key]) + '</div></div>';
+    rows += '<div class="ci-row"><div class="ci-top"><span>' + (f.icon ? '<span class="ico ico-' + f.icon + '"></span>' : '') + esc(f.label) + '</span>' + yesNo('data-act="flag" data-key="' + f.key + '"', !!e.flags[f.key]) + '</div>' + flagDetailHtml(e, f.key) + '</div>';
   });
   S.settings.customQuestions.forEach(function (q) {
     if (!q.on) return;
@@ -949,7 +960,7 @@ function detailRows(e) {
   if (nut.length) rows.push(['Ernährung', esc(nut.join(', '))]);
   if (e.creamUsed) rows.push(['Creme', e.creams.length ? esc(e.creams.join(', ')) : 'Ja']);
   if (e.meds) rows.push(['Medikamente', e.medications.length ? esc(e.medications.join(', ')) : 'Ja']);
-  var fl = FLAG_DEFS.filter(function (f) { return e.flags[f.key]; }).map(function (f) { return f.short; });
+  var fl = FLAG_DEFS.filter(function (f) { return e.flags[f.key]; }).map(function (f) { return flagShort(e, f); });
   S.settings.customQuestions.forEach(function (q) { if (e.custom[q.id]) fl.push(q.label); });
   if (fl.length) rows.push(['Außerdem', esc(fl.join(', '))]);
   return rows;
@@ -1121,6 +1132,108 @@ function renderInsights() {
 }
 
 // ---------- Einstellungen ----------
+// ---------- Details zu Sport, Sonne, Alkohol ----------
+function fmtNum(n) { return String(Math.round(n * 2) / 2).replace('.', ','); }
+function fmtH(h) { return fmtNum(h) + ' h'; }
+function fmtDrinks(n) { return n + (n === 1 ? ' Getränk' : ' Getränke'); }
+function sportList(e) { return Array.isArray(e.details.sport) ? e.details.sport : []; }
+function sportText(e) { return sportList(e).map(function (x) { return x.name + ' ' + fmtH(x.hours); }).join(', '); }
+function detailText(e, key) {
+  if (!e.flags[key]) return '';
+  if (key === 'sport') return sportText(e);
+  if (key === 'sun') return e.details.sun && e.details.sun.hours ? fmtH(e.details.sun.hours) : '';
+  if (key === 'alcohol') return e.details.alcohol && e.details.alcohol.amount ? fmtDrinks(e.details.alcohol.amount) : '';
+  return '';
+}
+function flagShort(e, f) { var d = detailText(e, f.key); return f.short + (d ? ' (' + d + ')' : ''); }
+function stepperRow(key, label, hint, text) {
+  return '<div class="det-row"><div class="det-label">' + esc(label) + (hint ? '<div class="det-hint">' + esc(hint) + '</div>' : '') + '</div>' +
+    '<div class="stepper"><button data-act="det-step" data-key="' + key + '" data-dir="-1" aria-label="weniger">−</button><span class="stepper-val">' + esc(text) + '</span><button data-act="det-step" data-key="' + key + '" data-dir="1" aria-label="mehr">+</button></div></div>';
+}
+function flagDetailHtml(e, key) {
+  if (!e.flags[key]) return '';
+  if (key === 'sport') {
+    var l = sportList(e).map(function (x) { return x.name + ' · ' + fmtH(x.hours); });
+    return tagSummary(l, 'sport-sheet').replace('Welche?', 'Welcher Sport, wie lange? (optional)');
+  }
+  if (key === 'sun') return stepperRow('sun', 'Wie lange? (optional)', '', e.details.sun && e.details.sun.hours ? fmtH(e.details.sun.hours) : '–');
+  if (key === 'alcohol') return stepperRow('alcohol', 'Wie viel? (optional)', '1 Getränk = z. B. 1 Bier (0,3 l) oder 1 Glas Wein', e.details.alcohol && e.details.alcohol.amount ? fmtDrinks(e.details.alcohol.amount) : '–');
+  return '';
+}
+function stepDetail(key, dir) {
+  var e = entry(S.viewDate);
+  if (key === 'sun') {
+    var h = (e.details.sun && e.details.sun.hours) || 0;
+    h = Math.min(12, Math.max(0, h + dir * 0.5));
+    if (h) e.details.sun = { hours: h }; else delete e.details.sun;
+  } else if (key === 'alcohol') {
+    var n = (e.details.alcohol && e.details.alcohol.amount) || 0;
+    n = Math.min(40, Math.max(0, n + dir));
+    if (n) e.details.alcohol = { amount: n }; else delete e.details.alcohol;
+  }
+  saveEntry(S.viewDate); renderToday();
+}
+function openSportSheet() {
+  var k = S.viewDate, hrs = 1;
+  var s = sheetView(function () {
+    var e = entry(k), today = sportList(e), names = today.map(function (x) { return x.name; });
+    var kn = S.settings.knownSports.filter(function (x) { return names.indexOf(x) === -1; });
+    return '<div class="sheet-title">Sport</div><div class="sheet-sub">Was hast du gemacht und wie lange?</div>' +
+      (today.length ? '<div class="sheet-sub" style="text-align:left;margin-bottom:6px">Heute (zum Entfernen antippen)</div><div class="sheet-tags">' + today.map(function (x, i) { return '<button class="sheet-tag" data-remove-sport="' + i + '">' + esc(x.name) + ' · ' + fmtH(x.hours) + ' ✕</button>'; }).join('') + '</div>' : '') +
+      (kn.length ? '<div class="sheet-sub" style="text-align:left;margin-bottom:6px">Schon mal gemacht (antippen)</div><div class="sheet-tags">' + kn.map(function (n) { return '<button class="sheet-tag suggest" data-pick-sport="' + esc(n) + '">' + esc(n) + '</button>'; }).join('') + '</div>' : '') +
+      '<input class="sheet-input" type="text" id="sheet-text" placeholder="z. B. Fußball, Krafttraining, Joggen">' +
+      '<div class="det-row" style="margin-bottom:10px"><div class="det-label">Dauer</div><div class="stepper"><button data-sport-h="-1" aria-label="kürzer">−</button><span class="stepper-val" id="sport-h">' + fmtH(hrs) + '</span><button data-sport-h="1" aria-label="länger">+</button></div></div>' +
+      '<button class="btn-secondary" data-add-sport>+ Hinzufügen</button>' +
+      '<div class="sheet-actions"><button class="btn-primary" data-close-sheet>Fertig</button></div>';
+  }, function (ev, sh) {
+    var t, e = entry(k);
+    if ((t = ev.target.closest('[data-sport-h]'))) { hrs = Math.min(12, Math.max(0.5, hrs + (+t.dataset.sportH) * 0.5)); $('#sport-h', sh).textContent = fmtH(hrs); return false; }
+    if ((t = ev.target.closest('[data-pick-sport]'))) { $('#sheet-text', sh).value = t.dataset.pickSport; return false; }
+    if ((t = ev.target.closest('[data-remove-sport]'))) { sportList(e).splice(+t.dataset.removeSport, 1); saveEntry(k); return true; }
+    if (ev.target.closest('[data-add-sport]')) {
+      var v = $('#sheet-text', sh).value.trim();
+      if (!v) return false;
+      if (!Array.isArray(e.details.sport)) e.details.sport = [];
+      e.details.sport.push({ name: v, hours: hrs });
+      if (S.settings.knownSports.indexOf(v) === -1) { S.settings.knownSports.push(v); saveSettings(); }
+      saveEntry(k); return true;
+    }
+    return false;
+  }, renderToday);
+  s.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { var b = $('[data-add-sport]', s); if (b) b.click(); } });
+  return s;
+}
+
+// ---------- Neuigkeiten & Updates ----------
+var APP_VERSION = '1.3';
+var CHANGELOG = [
+  { v: '1.3', date: '27.11.2026', items: ['Sport: Art und Dauer eintragen, häufige Sportarten werden gemerkt', 'Sonne: Dauer in Stunden (optional)', 'Alkohol: Menge in Getränken (optional)', 'Neu: „Was ist neu" in den Einstellungen und automatischer Update-Hinweis'] },
+  { v: '1.2', date: '24.11.2026', items: ['Tägliche Erinnerung per Mitteilung (einstellbare Uhrzeit)', 'Regler lassen sich auf dem Handy zuverlässig verschieben'] },
+  { v: '1.1', date: '22.11.2026', items: ['Eigener Login mit E-Mail und Passwort', 'PDF-Export für den Arztbesuch', 'Chat zu deinen Daten'] }
+];
+function openChangelogSheet() {
+  sheetView(function () {
+    return '<div class="sheet-title">Was ist neu</div><div class="sheet-sub">Aktuelle Version ' + APP_VERSION + '</div>' +
+      CHANGELOG.map(function (c) { return '<div class="cl-block"><div class="cl-head">Version ' + c.v + ' <span class="cl-date">' + c.date + '</span></div><ul class="cl-list">' + c.items.map(function (i) { return '<li>' + esc(i) + '</li>'; }).join('') + '</ul></div>'; }).join('') +
+      '<div class="sheet-actions"><button class="btn-primary" data-close-sheet>Fertig</button></div>';
+  }, null);
+}
+var updateShown = false;
+async function checkUpdate() {
+  if (updateShown) return;
+  try {
+    var r = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    var j = await r.json();
+    if (j && j.version && j.version !== APP_VERSION) {
+      updateShown = true;
+      var b = document.createElement('button'); b.className = 'update-bar'; b.textContent = 'Neue Version verfügbar. Tippen zum Aktualisieren';
+      b.addEventListener('click', function () { flushAll(); setTimeout(function () { location.reload(); }, 400); });
+      document.body.appendChild(b);
+    }
+  } catch (e) { /* offline: später wieder */ }
+}
+
 // ---------- Tägliche Erinnerung (Push) ----------
 var VAPID_PUBLIC = 'BIccPkQsy-2nOsIVPSbOJbA50KcCQw0HXeL8KP2nvZEnJdJnnLn_EQqMDV8oiKs5HKRAip-AzMpLyGTRA8PqM_E';
 var remind = { checked: false, on: false, time: '21:00', busy: false, msg: '' };
@@ -1204,6 +1317,7 @@ function renderSettings() {
     '<button class="item" data-act="open-csv"><span>Daten exportieren (CSV)</span><span class="chev-r">›</span></button>' +
     '<button class="item danger" data-act="open-wipe"><span>Alle Einträge löschen</span></button></div>' +
     '<div class="foot">Deine Einträge sind nur mit deinem Login abrufbar. Andere Konten sehen sie nicht.</div></div>' +
+    '<div><div class="sec-label">Neuigkeiten</div><div class="list"><button class="item" data-act="open-changelog"><span>Was ist neu</span><span class="chev-r">Version ' + APP_VERSION + ' ›</span></button></div></div>' +
     '<div><div class="sec-label">Konto</div><div class="list"><div class="item static"><span>' + esc((S.user && S.user.email) || '') + '</span></div><button class="item" data-act="logout"><span>Abmelden</span></button></div></div>';
 }
 function renderPlus() {
@@ -1252,7 +1366,7 @@ function openManageSheet() {
 function csvText(keysArg) {
   var ks = keysArg || subKeys();
   var conds = COND_ORDER.filter(function (c) { return ks.some(function (k) { return S.entries[k].sev[c]; }); });
-  var head = ['Datum'].concat(conds.map(function (c) { return COND_LABELS[c]; }), ['Schlaf', 'Stress'], NUTRITION_DEFS.map(function (d) { return d.label; }), FLAG_DEFS.map(function (f) { return f.short; }), S.settings.customQuestions.map(function (q) { return q.label; }), ['Creme', 'Medikamente']);
+  var head = ['Datum'].concat(conds.map(function (c) { return COND_LABELS[c]; }), ['Schlaf', 'Stress'], NUTRITION_DEFS.map(function (d) { return d.label; }), FLAG_DEFS.map(function (f) { return f.short; }), S.settings.customQuestions.map(function (q) { return q.label; }), ['Creme', 'Medikamente', 'Sport (Details)', 'Sonne (Stunden)', 'Alkohol (Getränke)']);
   function q(v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }
   var lines = [head.map(q).join(',')];
   ks.forEach(function (k) {
@@ -1263,7 +1377,7 @@ function csvText(keysArg) {
       NUTRITION_DEFS.map(function (d) { return e.nut[d.key] ? 1 : 0; }),
       FLAG_DEFS.map(function (f) { return e.flags[f.key] ? 1 : 0; }),
       S.settings.customQuestions.map(function (x) { return e.custom[x.id] ? 1 : 0; }),
-      [e.creamUsed ? (e.creams.join('; ') || 'ja') : '', e.meds ? (e.medications.join('; ') || 'ja') : '']
+      [e.creamUsed ? (e.creams.join('; ') || 'ja') : '', e.meds ? (e.medications.join('; ') || 'ja') : '', e.flags.sport ? sportText(e) : '', e.flags.sun && e.details.sun ? e.details.sun.hours : '', e.flags.alcohol && e.details.alcohol ? e.details.alcohol.amount : '']
     );
     lines.push(row.map(q).join(','));
   });
@@ -1400,7 +1514,7 @@ function buildPdf(jsPDF, keys) {
   keys.forEach(function (k) {
     var e = S.entries[k];
     var eat = NUTRITION_DEFS.filter(function (x) { return e.nut[x.key]; }).map(function (x) { return x.label; })
-      .concat(FLAG_DEFS.filter(function (f) { return e.flags[f.key]; }).map(function (f) { return f.short; }))
+      .concat(FLAG_DEFS.filter(function (f) { return e.flags[f.key]; }).map(function (f) { return flagShort(e, f); }))
       .concat(S.settings.customQuestions.filter(function (q) { return e.custom[q.id]; }).map(function (q) { return q.label; }));
     var cm = [];
     if (e.creamUsed) cm.push('Creme: ' + (e.creams.join(', ') || 'ja'));
@@ -1545,7 +1659,10 @@ document.addEventListener('click', function (ev) {
     case 'sev': e = entry(k); e.sev[key] = e.sev[key] || { has: false, value: 5 }; e.sev[key].has = val; if (val && e.sev[key].value == null) e.sev[key].value = 5; saveEntry(k); renderToday(); break;
     case 'cream': e = entry(k); e.creamUsed = val; saveEntry(k); renderToday(); break;
     case 'meds': e = entry(k); e.meds = val; saveEntry(k); renderToday(); break;
-    case 'flag': e = entry(k); e.flags[key] = val; saveEntry(k); renderToday(); break;
+    case 'flag': e = entry(k); e.flags[key] = val; if (!val) delete e.details[key]; saveEntry(k); renderToday(); break;
+    case 'det-step': stepDetail(key, +a.dataset.dir); break;
+    case 'sport-sheet': openSportSheet(); break;
+    case 'open-changelog': openChangelogSheet(); break;
     case 'custom': e = entry(k); e.custom[key] = val; saveEntry(k); renderToday(); break;
     case 'nutri-off': e = entry(k); e.nut[key] = false; saveEntry(k); renderToday(); break;
     case 'food': openFoodSheet(); break;
